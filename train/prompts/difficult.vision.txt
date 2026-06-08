@@ -10,7 +10,7 @@ Output a TikZ-like specification that maps directly to draw commands. Use ONLY t
 \definecolor{myRed}{HTML}{C2504B}     %% custom colors
 
 RULES:
-- Every formula in LaTeX: $\sum$, $\alpha$, $\rightarrow$, etc.
+- Every formula in exact LaTeX: $\sum$, $\alpha$, $\rightarrow$, etc. Never plain English.
 - Every segment: specify from/to, color, style (solid/dashed/dotted), arrow tip
 - Every label: specify which segment it's on, position (midway/above/right)
 - Every arc: specify angles (polar), radius, direction
@@ -22,7 +22,12 @@ RULES:
 - For 3D isometric views: state projection type and viewing angles (e.g. 'tdplot_main_coords theta=60 phi=120'), describe which axes are tilted
 - For fractal/recursive patterns: state depth/order, branch colors, and whether structure is symmetric or asymmetric
 - For divided circles/wedges: state dividing line angles from center, whether lines are double-stroked (gap), and relative wedge sizes
-- **OUTPUT CHECKLIST — before finalizing, verify ALL of the following are included in your description:**
+
+TOPOLOGY & DEPTH:
+- OPEN vs CLOSED: Is the shape fully enclosed, or does it have gaps / extending line segments that do NOT connect back to the start?
+- EXTENDING SEGMENTS: Are there lines that continue beyond the main body (e.g., diagonal legs sticking out of a quadrilateral)? State their direction and length.
+
+OUTPUT CHECKLIST — before finalizing, verify ALL of the following are included in your description:
   - Every visible line, segment, border, and outline (including outer borders/bounding boxes of diagrams)
   - Every arrowhead and its direction (from→to)
   - Every label with exact subscript/superscript notation ($b'_n$, $x_j$, $\beta_1$, $C_{k-1}$, etc.)
@@ -34,4 +39,3 @@ RULES:
   - The outer bounding box or frame of the entire figure, if present
 - **Multi-panel figures**: describe each panel (a), (b), (c) separately with its own layout and coordinates.
 - **For curved/feedback arrows**: specify the exact start and end connection points, and whether clockwise or counterclockwise.
-

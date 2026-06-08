@@ -20,7 +20,9 @@ RULES:
 17) MATRIX/TABLE: use \usetikzlibrary{matrix,fit}. Use `matrix of nodes` with `nodes in empty cells` so ALL cells share the grid. Place operators ($\times$, $=$) between matrices via `right=of <matrix>` at mid-height.
 18) TEXT IN NODES: for ragged-right with wide word spacing, use \usepackage{ragged2e} + \RaggedRight + \parbox{width}{...}. No naked text.
 19) Match the description's layout: row, column, grid, tree, radial, 3D, fractal.
-20) No unused packages, no commented-out blocks.
+20) OPEN SHAPES: If the description says a shape has gaps or extending segments, use \draw to draw each edge individually. Do NOT use -- cycle to force closure.
+21) EXTENDING SEGMENTS: If the description mentions lines that extend beyond the main body, make those segments at least as long as the main shape itself so the open topology is visually obvious. Do NOT draw tiny stub lines.
+22) No unused packages, no commented-out blocks.
 EXAMPLE:
 \documentclass[tikz, border=2pt]{standalone}
 \usetikzlibrary{arrows.meta}
@@ -29,5 +31,22 @@ EXAMPLE:
   \def\R{2cm}
   \coordinate (A) at (90:\R);
   \draw[red, thick] (A) arc (90:-30:\R) node[midway, right] {$x$};
+\end{tikzpicture}
+\end{document}
+EXAMPLE — open quadrilateral with extending diagonal legs:
+\documentclass[tikz, border=2pt]{standalone}
+\begin{document}
+\begin{tikzpicture}
+  \coordinate (TL) at (0,2);
+  \coordinate (TR) at (2,2);
+  \coordinate (BL) at (0,0);
+  \coordinate (BR) at (2,0);
+  \draw[thick] (TL) -- (BL);          % left vertical
+  \draw[dashed] (TL) -- (TR);         % top dashed
+  \draw[thick] (TR) -- (BR);          % right vertical
+  \draw[thick] (TL) ++(-1.5,1.5) -- (TL);  % upper-left extending leg (LONG)
+  \draw[thick] (BR) -- ++(1.5,-1.5);       % lower-right extending leg (LONG)
+  \fill (TL) circle (2pt);
+  \fill (TR) circle (2pt);
 \end{tikzpicture}
 \end{document}

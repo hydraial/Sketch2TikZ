@@ -142,12 +142,6 @@ async function startGeneration() {
     const currentKey = getFileKey(currentImageFile);
     const canRefine = selectedTaskId && currentKey === lastGenFileKey;
 
-    if (canRefine && !promptVal) {
-        showToast('请在左侧「自定义描述」中输入修改意见');
-        customPrompt.focus();
-        return;
-    }
-
     setGenerating(true);
     resetProgress();
     progressArea.classList.remove('hidden');
@@ -160,6 +154,7 @@ async function startGeneration() {
         const form = new FormData();
         form.append('prev_task_id', selectedTaskId);
         form.append('custom_prompt', promptVal);
+        // difficulty parameter removed — universal prompt for all
         try {
             const res = await fetch('/api/refine', { method: 'POST', body: form });
             if (!res.ok) {
@@ -181,6 +176,7 @@ async function startGeneration() {
         const form = new FormData();
         form.append('file', currentImageFile);
         if (promptVal) form.append('custom_prompt', promptVal);
+        // difficulty parameter removed — universal prompt for all
         try {
             const res = await fetch('/api/generate', { method: 'POST', body: form });
             if (!res.ok) {

@@ -11,35 +11,66 @@ load_dotenv(override=True)
 from train.llm_caller import image_to_text, text_to_text, _create
 from train.llm_caller import CODE_MODELS, VISION_MODELS, VISION_PLATFORMS, CODE_PLATFORMS
 from train.contract import SampleResult
+from train.prompts import load_prompts
 
 XELATEX = os.getenv("XELATEX_PATH", "xelatex")
 
-# ── Prompts ──────────────────────────────────────────
-VISION_PROMPT = (
+# ── Prompts (loaded per-difficulty from train/prompts/) ──
+_VISION_PROMPT_CACHE = {}
+_CODE_SYSTEM_CACHE = {}
+
+
+# ── Temporary universal prompt override for A/B benchmark ──
+# To restore per-difficulty loading, revert the two functions below.
+
+_UNIVERSAL_VISION_PROMPT = (
     "Describe this diagram with maximum precision for TikZ code generation.\n\n"
-    "FORMULAS: Every mathematical expression MUST be written in LaTeX notation "
+    "OUTPUT FORMAT: Use a TikZ-like specification that maps directly to draw commands. "
+    "Prefer notation the code generator can copy verbatim.\n\n"
+    "FORMULAS: Every mathematical expression MUST be written in exact LaTeX notation "
     "(e.g. $\\sum_{i=1}^{n} x_i$, $\\frac{a}{b}$, $\\alpha$, $\\rightarrow$). "
     "Never describe formulas in plain English — output the exact LaTeX.\n\n"
     "SHAPES: Count and name every shape precisely. For each shape, state:\n"
     "- Type: rectangle, circle, ellipse, straight line, curved arrow, dashed line, etc.\n"
     "- Position: exact relative location (center, top-left, bottom-right, between X and Y)\n"
     "- Size: relative scale (large, small, same width as X, half the height of Y)\n"
-    "- Style: solid, dashed, dotted, thick, thin, color, filled/hollow\n\n"
+    "- Style: solid, dashed, dotted, thick, thin, color, filled/hollow\n"
+    "Use polar coords for circular diagrams: (angle:radius). Use cartesian for grid/bar/flowchart: (x,y).\n\n"
     "LINES & ARROWS: For every connector, state: start point, end point, "
     "direction (→, ←, ↔), style (straight, curved, right-angle), "
     "and any labels on or near it.\n\n"
     "TOPOLOGY & DEPTH: For every shape, explicitly state:\n"
-    "- OPEN vs CLOSED: Is the shape a fully enclosed polygon, or does it have gaps / "
+    "- OPEN vs CLOSED: Is the shape fully enclosed, or does it have gaps / "
     "extending line segments that do NOT connect back to the start?\n"
-    "- 3D STRUCTURE: If the shape is a tetrahedron, cube, or other polyhedron, "
-    "count the visible faces, edges, and internal edges. Do NOT reduce it to a flat 2D triangle.\n"
-    "- EXTENDING SEGMENTS: Are there lines that continue beyond the main body "
-    "(e.g., diagonal legs sticking out of a quadrilateral)? State their direction and length.\n\n"
+    "- 3D STRUCTURE: If a polyhedron, count visible faces, edges, internal edges. "
+    "Do NOT reduce it to a flat 2D triangle.\n"
+    "- EXTENDING SEGMENTS: Are there lines that continue beyond the main body? "
+    "State their direction and length.\n\n"
+    "SPECIAL SHAPES:\n"
+    "- For graphs: specify vertex symbols ($*$ vs filled dot vs circle). "
+    "For self-loops: specify angular position (top/bottom/left/right) and relative size.\n"
+    "- For symmetric arc-cutout shapes: describe arc centers, radii, and the resulting central shape.\n"
+    "- For 3D isometric views: state projection type and viewing angles (e.g. 'tdplot_main_coords theta=60 phi=120').\n"
+    "- For fractal/recursive patterns: state depth/order, branch colors, and symmetry.\n"
+    "- For divided circles/wedges: state dividing line angles, whether double-stroked, and wedge sizes.\n"
+    "- For curved/feedback arrows: specify exact start and end connection points, "
+    "and whether clockwise or counterclockwise.\n\n"
+    "OUTPUT CHECKLIST — verify ALL of the following are included:\n"
+    "- Every visible line, segment, border, and outline (including outer bounding boxes)\n"
+    "- Every arrowhead and its direction (from→to)\n"
+    "- Every label with exact subscript/superscript notation\n"
+    "- Every tick mark on axes, circles, or curves\n"
+    "- Every dashed, dotted, or hatched line/region\n"
+    "- Every filled region or shaded area (including pattern direction)\n"
+    "- Every curved line or arc (with start/end points and routing)\n"
+    "- Every node/vertex shape and its color\n"
+    "- The outer bounding box or frame of the entire figure, if present\n\n"
+    "Multi-panel figures: describe each panel (a), (b), (c) separately with its own layout.\n\n"
     "LAYOUT: Describe the overall spatial arrangement. Are elements in a row, "
     "column, grid, tree, or free-form? What is the relative spacing?"
 )
 
-CODE_SYSTEM = (
+_UNIVERSAL_CODE_SYSTEM = (
     "You are a TikZ LaTeX expert. Generate correct, compilable TikZ code.\n"
     "RULES:\n"
     "1) First line: \\documentclass[tikz, border=2pt]{standalone}\n"
@@ -56,9 +87,33 @@ CODE_SYSTEM = (
     "10) OPEN SHAPES: If the description says a shape has gaps or extending segments, "
     "use \\draw to draw each edge individually. Do NOT use -- cycle to force closure.\n"
     "11) EXTENDING SEGMENTS: If the description mentions lines that extend beyond the main body, "
-    "make those segments at least as long as the main shape itself so the open topology is visually obvious. "
-    "Do NOT draw tiny stub lines.\n"
-    "12) No unused packages, no commented-out blocks.\n"
+    "make those segments at least as long as the main shape itself. Do NOT draw tiny stub lines.\n"
+    "12) FILLED DOTS: only place \\fill (X) circle (2pt) at exactly the vertices the description specifies. "
+    "Do NOT add dots at every vertex automatically.\n"
+    "13) ARC AND LINE LABELS: place labels via 'node[midway, above] {label}' directly on the \\draw command. "
+    "NEVER place labels at separate unconnected coordinates.\n"
+    "14) POLAR COORDINATES: for circular/radial diagrams, use (angle:radius). "
+    "Define \\def\\R{2cm} for radius, use \\coordinate.\n"
+    "15) COLORS: use \\definecolor{name}{HTML}{hex} for precise colors. "
+    "Match the description's colors exactly — don't substitute generic 'red'.\n"
+    "16) SELF-LOOPS: use edge [in=<angle>,out=<angle>,loop] with explicit angles "
+    "(top=70/110, right=0/30, bottom=270/290, left=150/180).\n"
+    "17) SYMMETRIC ARCS: for quarter-circle cutouts, chain arc commands with -- connectors. "
+    "Ensure arcs share endpoints at edge midpoints.\n"
+    "18) 3D PROJECTIONS: use \\usepackage{tikz-3dplot} + \\tdplotsetmaincoords{60}{120} + [tdplot_main_coords]. "
+    "Include dashed projection wireframe.\n"
+    "19) FRACTAL/RECURSIVE: use \\usetikzlibrary{lindenmayersystems} + \\pgfdeclarelindenmayersystem with production rules.\n"
+    "20) DIVIDED CIRCLES: use double, double distance=2mm for parallel-line cut edges. "
+    "Draw sectors with \\clip on the circle + radial lines at specified angles.\n"
+    "21) MATRIX/TABLE: use \\usetikzlibrary{matrix,fit}. Use matrix of nodes with nodes in empty cells. "
+    "Place operators between matrices via right=of <matrix> at mid-height.\n"
+    "22) HATCHED/SHADED regions: use \\fill[pattern=north east lines, pattern color=...]. Do not omit.\n"
+    "23) TICK MARKS on axes: use \\draw (x,ymin) -- (x,ymin-0.1) with explicit positions. Do not omit.\n"
+    "24) CURVED FEEDBACK ARROWS: use .. controls +(left:Xcm) and +(left:Xcm) .. for smooth bends.\n"
+    "25) Copy labels verbatim — subscripts, superscripts, primes, Greek letters. Do NOT rename variables.\n"
+    "26) No unused packages, no commented-out blocks.\n"
+    "27) NEVER use plot[samples>100] or \foreach with >200 iterations — this causes TeX 'Dimension too large' crash.\n"
+    "28) In \pgfmathsetmacro, avoid large-number multiply-then-divide (e.g. 360*\k/\N). Reorder as \k/\N*360 or 360/\N*\k.\n"
     "EXAMPLE — simple node + arrow:\n"
     "\\documentclass[tikz, border=2pt]{standalone}\n"
     "\\begin{document}\n"
@@ -87,6 +142,15 @@ CODE_SYSTEM = (
     "\\end{document}"
 )
 
+
+def get_vision_prompt(difficulty: str = "easy") -> str:
+    return _UNIVERSAL_VISION_PROMPT
+
+
+def get_code_system(difficulty: str = "easy") -> str:
+    return _UNIVERSAL_CODE_SYSTEM
+
+
 CRITIC_PROMPT = (
     "You are evaluating how well a generated figure matches a reference image. "
     "Image 1 is the REFERENCE (ground truth). Image 2 is the GENERATED output. "
@@ -104,17 +168,6 @@ CRITIC_PROMPT = (
     '"diagnosis": "<one sentence describing the main difference>"}'
 )
 
-# ── Prompt getters (used by test/runner.py) ───────────
-
-def get_vision_prompt(difficulty: str = "easy") -> str:
-    """Return the vision prompt for the given difficulty."""
-    return VISION_PROMPT
-
-
-def get_code_system(difficulty: str = "easy") -> str:
-    """Return the code system prompt for the given difficulty."""
-    return CODE_SYSTEM
-
 
 # ── Helpers ──────────────────────────────────────────
 def _fix(code: str) -> str:
@@ -124,6 +177,15 @@ def _fix(code: str) -> str:
     for pkg in ["MnSymbol", "mathrsfs"]:
         code = code.replace(r"\usepackage{" + pkg + "}", r"% removed")
         code = code.replace("," + pkg, "").replace(pkg + ",", "")
+    # Cap samples to prevent TeX "Dimension too large" overflow
+    code = re.sub(r'samples\s*=\s*(\d{3,})', r'samples=100', code)
+    # Fix common PGF math overflow: reorder large-number multiplication
+    # e.g. \pgfmathsetmacro{\t}{360*\k/\N} -> \pgfmathsetmacro{\t}{\k/\N*360}
+    code = re.sub(
+        r'(\\pgfmathsetmacro\{[^}]+\}\{)(\d+)(\*[^{}/\n]+/[^}]+)\}',
+        lambda m: f'{m.group(1)}{m.group(3)[1:]}*{m.group(2)}' + "}",
+        code,
+    )
     return code
 
 
@@ -148,12 +210,32 @@ def _compile(tex_path: str, pdf_path: str) -> tuple:
         if os.path.exists(log_abs):
             with open(log_abs, "r", encoding="utf-8", errors="replace") as f:
                 lines = [l.strip() for l in f if l.startswith("! ")]
-                return False, "\n".join(lines[-10:])
+                err_text = "\n".join(lines[-10:])
+                return False, err_text
         return False, "(no log)"
     except subprocess.TimeoutExpired:
         return False, "Compile timeout"
     except FileNotFoundError:
         return False, f"XeLaTeX not found: {XELATEX}"
+
+
+def _reduce_samples_for_overflow(code: str) -> str:
+    """Emergency fix for Dimension too large: halve all samples values."""
+    def halver(m):
+        n = int(m.group(1))
+        return f'samples={max(20, n // 2)}'
+    return re.sub(r'samples\s*=\s*(\d+)', halver, code)
+
+
+def _reduce_foreach_loops(code: str) -> str:
+    """Emergency fix: reduce \foreach iteration counts > 100."""
+    def cap(m):
+        n = int(m.group(1))
+        if n > 100:
+            return f'{m.group(2)}100'
+        return m.group(0)
+    # Match \Nlines{120} or \def\Nlines{120}
+    return re.sub(r'(\\[a-zA-Z]+\{)(\d{3,})(\})', cap, code)
 
 
 def _gs() -> str:
@@ -224,8 +306,12 @@ def generate(image_path: str, index: int, output_dir: str = "output", difficulty
     t_start = time.time()
     os.makedirs(output_dir, exist_ok=True)
 
+    # Load per-difficulty prompts
+    vision_prompt = get_vision_prompt(difficulty)
+    code_system = get_code_system(difficulty)
+
     # N1: Vision description
-    desc = image_to_text(image_path, VISION_PROMPT,
+    desc = image_to_text(image_path, vision_prompt,
                          platforms=VISION_PLATFORMS, temperature=0.0, max_tokens=1024)
     vision_time = round(time.time() - t_start, 1)
 
@@ -233,7 +319,7 @@ def generate(image_path: str, index: int, output_dir: str = "output", difficulty
     pdf_path = os.path.join(output_dir, f"gen_{index:04d}.pdf")
 
     msgs = [
-        {"role": "system", "content": CODE_SYSTEM},
+        {"role": "system", "content": code_system},
         {"role": "user", "content": f"Generate TikZ code for:\n{desc}"},
     ]
 
@@ -250,7 +336,7 @@ def generate(image_path: str, index: int, output_dir: str = "output", difficulty
         compile_attempts = attempt + 1
         if attempt == 0:
             # First attempt: let the code model see the original image too
-            code_prompt = CODE_SYSTEM + "\n\nGenerate TikZ code based on this description AND the original image:\n" + desc
+            code_prompt = code_system + "\n\nGenerate TikZ code based on this description AND the original image:\n" + desc
             raw = image_to_text(image_path, code_prompt,
                                 platforms=[p for p in CODE_PLATFORMS if p in VISION_MODELS],
                                 temperature=0.0, max_tokens=4096)
@@ -265,6 +351,16 @@ def generate(image_path: str, index: int, output_dir: str = "output", difficulty
         if ok:
             compile_ok = True
             break
+        # Emergency auto-fix for Dimension too large (no LLM round needed)
+        if "Dimension too large" in errors:
+            tikz = _reduce_samples_for_overflow(tikz)
+            tikz = _reduce_foreach_loops(tikz)
+            with open(tex_path, "w", encoding="utf-8") as f:
+                f.write(tikz)
+            ok2, _ = _compile(tex_path, pdf_path)
+            if ok2:
+                compile_ok = True
+                break
         msgs.append({"role": "user",
                      "content": f"Compile errors:\n{errors}\nFix and output complete code."})
     else:

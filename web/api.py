@@ -14,6 +14,7 @@ router = APIRouter()
 async def api_generate(
     file: UploadFile = File(...),
     custom_prompt: Optional[str] = Form(None),
+    difficulty: str = Form("easy"),
 ):
     """Upload a sketch and start generation. Returns task_id immediately."""
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -40,6 +41,7 @@ async def api_generate(
         callbacks=_callback,
         custom_prompt=task.custom_prompt,
         task_id=task.task_id,
+        difficulty=difficulty,
     )
 
     return {"task_id": task.task_id, "status": "queued"}
@@ -100,6 +102,7 @@ async def api_task_stream(task_id: str):
 async def api_refine(
     prev_task_id: str = Form(...),
     custom_prompt: str = Form(...),
+    difficulty: str = Form("easy"),
 ):
     """Refine a previous generation with user feedback + visual comparison.
     Reuses the original image from prev_task to ensure consistency."""
@@ -131,6 +134,7 @@ async def api_refine(
         output_dir=task.output_dir,
         callbacks=_callback,
         task_id=task.task_id,
+        difficulty=difficulty,
     )
 
     return {"task_id": task.task_id, "status": "queued"}

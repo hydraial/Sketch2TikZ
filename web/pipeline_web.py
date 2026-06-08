@@ -6,8 +6,9 @@ import os, time, json
 from typing import Callable, Optional
 
 from train.pipeline import (
-    VISION_PROMPT, CODE_SYSTEM, CRITIC_PROMPT,
+    get_vision_prompt, get_code_system, CRITIC_PROMPT,
     _fix, _clean, _compile, _pdf_to_png, _encode_img,
+    _reduce_samples_for_overflow, _reduce_foreach_loops,
     _internal_critic as _orig_internal_critic,
 )
 from train.llm_caller import image_to_text, text_to_text, _create, VISION_MODELS, VISION_PLATFORMS, CODE_PLATFORMS
@@ -21,6 +22,7 @@ def generate_with_callbacks(
     callbacks: Optional[Callable] = None,
     custom_prompt: Optional[str] = None,
     task_id: str = "",
+    difficulty: str = "easy",
 ) -> dict:
     """
     Run the full Sketch2TikZ pipeline with optional progress callbacks.
@@ -51,7 +53,7 @@ def generate_with_callbacks(
     else:
         _cb("vision", "running", "Analyzing sketch with vision model...")
         try:
-            desc = image_to_text(image_path, VISION_PROMPT,
+            desc = image_to_text(image_path, get_vision_prompt(difficulty),
                                  platforms=VISION_PLATFORMS, temperature=0.0, max_tokens=1024)
             _cb("vision", "success", "Vision analysis complete", {"description": desc[:200]})
         except Exception as e:
@@ -64,8 +66,9 @@ def generate_with_callbacks(
     pdf_path = os.path.join(output_dir, "output.pdf")
     png_path = os.path.join(output_dir, "output.png")
 
+    code_system = get_code_system(difficulty)
     msgs = [
-        {"role": "system", "content": CODE_SYSTEM},
+        {"role": "system", "content": code_system},
         {"role": "user", "content": f"Generate TikZ code for:\n{desc}"},
     ]
 
@@ -85,7 +88,7 @@ def generate_with_callbacks(
 
         if attempt == 0 and custom_prompt is None:
             # First attempt: let code model see original image too
-            code_prompt = CODE_SYSTEM + "\n\nGenerate TikZ code based on this description AND the original image:\n" + desc
+            code_prompt = code_system + "\n\nGenerate TikZ code based on this description AND the original image:\n" + desc
             try:
                 raw = image_to_text(image_path, code_prompt,
                                     platforms=[p for p in CODE_PLATFORMS if p in VISION_MODELS],
@@ -117,6 +120,19 @@ def generate_with_callbacks(
         else:
             _cb("compile", "retry", f"Compile error on attempt {compile_attempts}: {errors[:150]}",
                 {"attempt": compile_attempts, "errors": errors})
+            # Emergency auto-fix for Dimension too large (no LLM round needed)
+            if "Dimension too large" in errors:
+                _cb("compile", "running", "Auto-reducing samples/loops to fix overflow...")
+                tikz = _reduce_samples_for_overflow(tikz)
+                tikz = _reduce_foreach_loops(tikz)
+                with open(tex_path, "w", encoding="utf-8") as f:
+                    f.write(tikz)
+                ok2, _ = _compile(tex_path, pdf_path)
+                if ok2:
+                    compile_ok = True
+                    _cb("compile", "success", "LaTeX compiled after auto-reducing samples",
+                        {"attempt": compile_attempts})
+                    break
             msgs.append({"role": "user",
                          "content": f"Compile errors:\n{errors}\nFix and output complete code."})
     else:
@@ -209,6 +225,7 @@ def refine_with_callbacks(
     output_dir: str,
     callbacks: Optional[Callable] = None,
     task_id: str = "",
+    difficulty: str = "easy",
 ) -> dict:
     """
     Refine existing TikZ code based on user feedback + visual comparison.
@@ -253,8 +270,9 @@ def refine_with_callbacks(
     b64_orig = _encode_img(image_path)
     b64_prev = _encode_img(prev_png_path)
 
+    code_system = get_code_system(difficulty)
     refine_system = (
-        CODE_SYSTEM + "\n\n"
+        code_system + "\n\n"
         "You are REFINING existing TikZ code based on AI visual diagnosis AND user feedback. "
         "Make ONLY minimal targeted changes. Address BOTH the AI-identified issues and the user's requests. "
         "Preserve everything that is already correct. Do NOT rewrite from scratch."
@@ -328,8 +346,21 @@ def refine_with_callbacks(
         else:
             _cb("compile", "retry", f"Compile error on attempt {compile_attempts}: {errors[:150]}",
                 {"attempt": compile_attempts, "errors": errors})
+            # Emergency auto-fix for Dimension too large (no LLM round needed)
+            if "Dimension too large" in errors:
+                _cb("compile", "running", "Auto-reducing samples/loops to fix overflow...")
+                tikz = _reduce_samples_for_overflow(tikz)
+                tikz = _reduce_foreach_loops(tikz)
+                with open(tex_path, "w", encoding="utf-8") as f:
+                    f.write(tikz)
+                ok2, _ = _compile(tex_path, pdf_path)
+                if ok2:
+                    compile_ok = True
+                    _cb("compile", "success", "LaTeX compiled after auto-reducing samples",
+                        {"attempt": compile_attempts})
+                    break
             fix_msgs = [
-                {"role": "system", "content": CODE_SYSTEM + "\n\nFix compilation errors. Make minimal changes. Output complete code."},
+                {"role": "system", "content": code_system + "\n\nFix compilation errors. Make minimal changes. Output complete code."},
                 {"role": "user", "content": f"```latex\n{tikz}\n```\n\nCompile errors:\n{errors}\n\nFix and output complete code."}
             ]
             try:
@@ -360,7 +391,7 @@ def refine_with_callbacks(
         if not c1["is_pass"]:
             _cb("codegen", "running", "Applying visual self-heal fixes...")
             heal_msgs = [
-                {"role": "system", "content": CODE_SYSTEM},
+                {"role": "system", "content": code_system},
                 {"role": "user", "content": f"Current TikZ code:\n```latex\n{tikz}\n```\n\n"
                                           f"Visual review found these differences from the reference:\n"
                                           f"{diagnosis}\n\nMake ONLY minimal targeted fixes to address these "
